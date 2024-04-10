@@ -1,5 +1,5 @@
 [package]
-name = "cebra_efficiency"
+name = "sps_runtime_estimator"
 version = "0.1.0"
 authors = ["Alex Conley <imaconley1@gmail.com>"]
 edition = "2021"
@@ -21,15 +21,6 @@ serde = { version = "1", features = ["derive"] }
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.10"
-
-egui_extras = { version = "0.27.2", features = ["datepicker"]}
-egui_plot = {version = "0.27.2", features = ["serde"] }
-chrono = { version = "0.4", features = ["serde"] }
-async-std = "1.5.3" 
-rfd = "0.13"
-varpro = "0.8.0"
-nalgebra = "0.32.4"
-serde_yaml = "0.9.31"
 
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]

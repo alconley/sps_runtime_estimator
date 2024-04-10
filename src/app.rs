@@ -1,178 +1,154 @@
+use eframe::egui::{self};
 use eframe::App;
 
-use serde_yaml;
+const CHARGE: f64 = 1.6e-19; // Elementary charge in C
+const NA: f64 = 6.023e23; // Avogadro's number
 
-use std::fs::File;
-use std::io::{Read, Write};
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
+struct RunTimeSettings {
+    cross_section: f64,     // µb/sr
+    target_density: f64,    // µg/cm^2
+    target_molar_mass: f64, // g/mol
+    beam_current: f64,      // nA
+    z_beam: i32,            // proton number
+    slit_settings: f64,     // msr
+    desired_counts: i64,    // counts
+    time_s: f64,            // seconds
+    time_h: f64,            // hours
+    time_d: f64,            // days
+}
 
-use super::gamma_source::GammaSource;
-use super::measurements::{Measurement, MeasurementHandler};
+impl RunTimeSettings {
+    pub fn new() -> Self {
+        Self {
+            cross_section: 100.0,
+            target_density: 100.0,
+            target_molar_mass: 240.0,
+            beam_current: 20.0,
+            z_beam: 1,
+            slit_settings: 4.62,
+            desired_counts: 1000,
+            time_s: 0.0,
+            time_h: 0.0,
+            time_d: 0.0,
+        }
+    }
 
-#[derive(Default, serde::Deserialize, serde::Serialize)]
-pub struct CeBrAEfficiencyApp {
-    measurment_handler: MeasurementHandler,
+    fn calculate_beam_time(&mut self) {
+        let slits_sr = self.slit_settings * 1e-3; // msr to sr
+        let target_density = self.target_density * 1e-6; // µg/cm^2 to g/cm^2
+        let beam_current = self.beam_current * 1e-9; // nA to A
+        let f_target = (target_density * NA) / (self.target_molar_mass) * (1e-24) * (1e-6);
+
+        let run_time_s = (self.z_beam as f64 * CHARGE * self.desired_counts as f64)
+            / (self.cross_section * f_target * slits_sr * beam_current);
+
+        self.time_s = run_time_s;
+        self.time_h = run_time_s / 3600.0;
+        self.time_d = self.time_h / 24.0;
+    }
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
+pub struct SPSRunTimeApp {
+    settings: RunTimeSettings,
     window: bool,
 }
 
-impl CeBrAEfficiencyApp {
+impl SPSRunTimeApp {
     pub fn new(_cc: &eframe::CreationContext<'_>, window: bool) -> Self {
         Self {
-            measurment_handler: MeasurementHandler::new(),
+            settings: RunTimeSettings::new(),
             window,
         }
     }
 
-    fn get_fsu_152eu_source(&mut self) -> GammaSource {
-        let mut gamma_source = GammaSource::new();
-        gamma_source.name = "152Eu".to_string();
-        gamma_source.half_life = 13.517; // years
-
-        gamma_source.source_activity_calibration.activity = 74.370; // kBq
-        gamma_source.source_activity_calibration.date =
-            chrono::NaiveDate::from_ymd_opt(2017, 3, 17);
-
-        gamma_source.add_gamma_line(121.7817, 28.53, 0.16);
-        gamma_source.add_gamma_line(244.6974, 7.55, 0.04);
-        gamma_source.add_gamma_line(344.2785, 26.59, 0.20);
-        gamma_source.add_gamma_line(411.1164, 2.237, 0.013);
-        gamma_source.add_gamma_line(443.9650, 2.827, 0.014);
-        gamma_source.add_gamma_line(778.9045, 12.93, 0.08);
-        gamma_source.add_gamma_line(867.3800, 4.23, 0.03);
-        gamma_source.add_gamma_line(964.0570, 14.51, 0.07);
-        gamma_source.add_gamma_line(1085.837, 10.11, 0.05);
-        gamma_source.add_gamma_line(1112.076, 13.67, 0.08);
-        gamma_source.add_gamma_line(1408.0130, 20.87, 0.09);
-
-        gamma_source
-    }
-
-    fn get_fsu_56co_source(&mut self) -> GammaSource {
-        let mut gamma_source = GammaSource::new();
-        gamma_source.name = "56Co".to_string();
-
-        let co60_halflife_days = 77.236; // days
-        gamma_source.half_life = co60_halflife_days / 365.25; // years
-
-        gamma_source.source_activity_calibration.activity = 108.0; // kBq (arbitrary scaled to match 152Eu)
-        gamma_source.source_activity_calibration.date =
-            chrono::NaiveDate::from_ymd_opt(2022, 4, 18);
-
-        gamma_source.add_gamma_line(846.7638, 99.9399, 0.0023);
-        gamma_source.add_gamma_line(1037.8333, 14.03, 0.05);
-        gamma_source.add_gamma_line(1360.196, 4.283, 0.013);
-        gamma_source.add_gamma_line(2598.438, 16.96, 0.04);
-        gamma_source.add_gamma_line(3451.119, 0.942, 0.006);
-
-        gamma_source
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn load_from_file() -> Self {
-        if let Some(path) = rfd::FileDialog::new()
-            .set_title("Open")
-            .add_filter("YAML", &["yaml", "yml"])
-            .pick_file()
-        {
-            match File::open(path) {
-                Ok(mut file) => {
-                    let mut data = String::new();
-                    file.read_to_string(&mut data)
-                        .expect("Failed to read data from file.");
-                    serde_yaml::from_str(&data).expect("Failed to deserialize data.")
-                }
-                Err(e) => {
-                    eprintln!("Failed to load file: {}", e);
-                    Self::default() // Return default if loading fails
-                }
-            }
-        } else {
-            Self::default() // Return default if no file is picked
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn save_to_file(&self) {
-        if let Some(path) = rfd::FileDialog::new()
-            .set_title("Save As")
-            .add_filter("YAML", &["yaml", "yml"])
-            .save_file()
-        {
-            match File::create(path) {
-                Ok(mut file) => {
-                    let data = serde_yaml::to_string(self).expect("Failed to serialize data.");
-                    file.write_all(data.as_bytes())
-                        .expect("Failed to write data to file.");
-                }
-                Err(e) => {
-                    eprintln!("Failed to save file: {}", e);
-                }
-            }
-        }
-    }
-
-    fn egui_save_and_load_file(&mut self, ui: &mut egui::Ui) {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            if ui.button("Save").clicked() {
-                self.save_to_file();
-                ui.close_menu();
-            }
-
-            if ui.button("Load").clicked() {
-                *self = Self::load_from_file();
-            }
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        {
-            // inplement save/load for web
-            ui.label("Save/Load not implemented for web as of now.");
-        }
-    }
-
     fn ui(&mut self, ui: &mut egui::Ui) {
-        egui::TopBottomPanel::top("cebra_efficiency_top_panel").show_inside(ui, |ui| {
-            egui::menu::bar(ui, |ui| {
-                ui.menu_button("File", |ui| {
-                    self.egui_save_and_load_file(ui);
-                });
-            });
+        egui::Grid::new("runtime_settings_grid")
+            .num_columns(2)
+            .spacing(egui::vec2(8.0, 4.0))
+            .striped(true)
+            .show(ui, |ui| {
+
+            ui.label("Cross Section:");
+
+                // Display and adjust the cross section as microbarns
+            ui.add(
+                egui::DragValue::new(&mut self.settings.cross_section)
+                    .speed(1.0)
+                    .suffix(" µb/sr")
+                    .clamp_range(0.0..=f64::INFINITY)
+                );
+            ui.end_row();
+
+
+            ui.label("Target Density:");
+            ui.add(
+                egui::DragValue::new(&mut self.settings.target_density)
+                    .speed(1.0)
+                    .suffix(" µg/cm^2")
+                    .clamp_range(0.0..=f64::INFINITY)
+            );
+            ui.end_row();
+
+            ui.label("Target Molar Mass:");
+            ui.add(
+                egui::DragValue::new(&mut self.settings.target_molar_mass)
+                    .speed(1.0)
+                    .suffix(" g/mol")
+                    .clamp_range(0.0..=f64::INFINITY)
+            );
+            ui.end_row();
+
+            ui.label("Beam Current:");
+            ui.add(
+                egui::DragValue::new(&mut self.settings.beam_current)
+                    .speed(1.0)
+                    .suffix(" nA")
+                    .clamp_range(0.0..=f64::INFINITY)
+            ).on_hover_text("Beam current on target.");
+            ui.end_row();
+
+            ui.label("Z Beam:");
+            ui.add(
+                egui::DragValue::new(&mut self.settings.z_beam)
+                    .speed(1.0)
+                    .prefix("Z = ")
+                    .clamp_range(1..=118) // Adjusted to allow minimum 1
+            ).on_hover_text("Proton number of the beam.");
+            ui.end_row();
+
+            ui.label("Slit Settings:");
+            ui.add(
+                egui::DragValue::new(&mut self.settings.slit_settings)
+                    .speed(0.1)
+                    .suffix(" msr")
+                    .clamp_range(0.0..=12.8)
+            ).on_hover_text("Solid angle of the SE-SPS. Typical value is 4.62 msr. The SE-SPS has a max solid angle of 12.8 msr.");
+            ui.end_row();
+
+            ui.label("Desired Counts:");
+            ui.add(
+                egui::DragValue::new(&mut self.settings.desired_counts)
+                    .speed(1.0)
+                    .suffix(" counts")
+                    .clamp_range(0..=i64::MAX)
+            ).on_hover_text("The desired number of counts in the peak of interest.");
+            ui.end_row();
+
+            // Call calculate_beam_time here if it should happen automatically upon any change
+            self.settings.calculate_beam_time();
+            ui.label("Estimated Time:");
+            ui.label(format!("{:.0} s | {:.2} h | {:.2} d", self.settings.time_s, self.settings.time_h, self.settings.time_d));
+            ui.end_row();
         });
-
-        egui::SidePanel::left("cebra_efficiency_left_side_panel").show_inside(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("FSU's Current Sources:");
-
-                if ui.button("152Eu").clicked() {
-                    let eu152 = self.get_fsu_152eu_source();
-
-                    self.measurment_handler
-                        .measurements
-                        .push(Measurement::new(Some(eu152)));
-                }
-
-                if ui.button("56Co").clicked() {
-                    let co56 = self.get_fsu_56co_source();
-
-                    self.measurment_handler
-                        .measurements
-                        .push(Measurement::new(Some(co56)));
-                }
-
-                ui.separator();
-            });
-
-            self.measurment_handler.sources_ui(ui);
-        });
-
-        self.measurment_handler.plot(ui);
     }
 }
 
-impl App for CeBrAEfficiencyApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+impl App for SPSRunTimeApp {
+    fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
         if self.window {
-            egui::Window::new("CeBrA Efficiency").show(ctx, |ui| {
+            egui::Window::new("SE-SPS Run Time Estimator").show(ctx, |ui| {
                 self.ui(ui);
             });
         } else {
